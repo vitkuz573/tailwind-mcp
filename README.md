@@ -159,6 +159,12 @@ the WCAG AA and AAA verdicts.
 `@config` and `@plugin`, and a size/mtime fingerprint of those files decides whether the engine
 has to be rebuilt. Edit any of them and the next call sees the change.
 
+**Package imports.** A real stylesheet imports more than itself: the framework's own sheet,
+packages that ship utilities (`tw-animate-css`), and sub-paths of packages (`shadcn/tailwind.css`).
+All three are resolved through the package's `exports` map, preferring the `style` condition, and
+plugins are loaded from packages too (`@plugin "@tailwindcss/typography"`). Nothing has to be
+rewritten or stubbed out.
+
 ## Performance
 
 Measured against a real project with a custom theme, on the first call after a server start:

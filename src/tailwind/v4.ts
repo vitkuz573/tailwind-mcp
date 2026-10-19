@@ -25,6 +25,7 @@ import type {
 import { fingerprint, fingerprintsEqual, type Fingerprint } from "./fingerprint.js";
 import { collectDependencies } from "./dependencies.js";
 import { buildScales, canonicalizeCandidate } from "./canonicalize.js";
+import { resolveStylesheet } from "./stylesheet.js";
 import type { ResolvedProject } from "./project.js";
 
 /** The subset of Tailwind v4's design system that this engine uses. */
@@ -149,36 +150,55 @@ export class V4Engine implements TailwindEngine {
     id: string,
     base: string,
   ): Promise<{ path: string; base: string; content: string }> {
-    const resolved = this.resolveStylesheet(id, base);
-    const content = await fs.readFile(resolved, "utf-8");
-    return { path: resolved, base: path.dirname(resolved), content };
-  }
-
-  private resolveStylesheet(id: string, base: string): string {
-    if (id.startsWith(".")) {
-      const candidate = path.resolve(base, id);
-      return withCssExtension(candidate);
-    }
-    if (id === "tailwindcss" || id.startsWith("tailwindcss/")) {
-      const relative = id === "tailwindcss" ? "index.css" : id.slice("tailwindcss/".length);
-      return path.join(this.project.install.packageDir, relative);
-    }
-    // A bare specifier that is not Tailwind itself: try the project first.
     try {
-      return this.project.install.require.resolve(id);
-    } catch {
-      throw loadFailed(`Cannot resolve stylesheet '${id}' from ${base}`, undefined, { id, base });
+      return await resolveStylesheet(
+        id,
+        base,
+        this.project.install.packageDir,
+        this.project.root,
+        this.project.install.require,
+      );
+    } catch (cause) {
+      throw loadFailed(
+        `Cannot resolve stylesheet '${id}' from ${base}: ${cause instanceof Error ? cause.message : String(cause)}`,
+        cause,
+        { id, base },
+      );
     }
   }
 
-  /** Load a JS/TS module referenced by `@config` or `@plugin`. */
+  /**
+   * Load a JS/TS module referenced by `@config` or `@plugin`.
+   *
+   * A specifier may be a path relative to the importing file, or a package
+   * name such as `@tailwindcss/typography`.
+   */
   private async loadModule(
     id: string,
     base: string,
   ): Promise<{ path: string; base: string; module: unknown }> {
-    const resolved = path.isAbsolute(id) ? id : path.resolve(base, id);
+    const resolved = this.resolveModule(id, base);
     const module = await import(pathToFileUrl(resolved));
     return { path: resolved, base: path.dirname(resolved), module: module.default ?? module };
+  }
+
+  /**
+   * Resolve a module specifier to an absolute path.
+   */
+  private resolveModule(id: string, base: string): string {
+    if (path.isAbsolute(id)) return id;
+
+    // A relative path, resolved against the importing file.
+    if (id.startsWith(".")) {
+      return path.resolve(base, id);
+    }
+
+    // A package: resolve it the way Node would, then let the caller load it.
+    try {
+      return this.project.install.require.resolve(id);
+    } catch {
+      throw loadFailed(`Cannot resolve module '${id}' from ${base}`, undefined, { id, base });
+    }
   }
 
   /**
