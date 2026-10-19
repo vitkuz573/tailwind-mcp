@@ -14,6 +14,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { loadFailed } from "../core/errors.js";
 import type {
+  CandidateDescription,
+  CanonicalCandidate,
   ClassEntry,
   CompiledClass,
   TailwindEngine,
@@ -38,7 +40,18 @@ interface V4DesignSystem {
   };
   resolveThemeValue(path: string, forceInline?: boolean): string | undefined;
   candidatesToCss(classes: string[]): (string | null)[];
+  candidatesToAst(classes: string[]): AstNode[][];
   getClassOrder(classes: string[]): [string, bigint | null][];
+  canonicalizeCandidates(candidates: string[], options?: { rem?: number }): string[];
+}
+
+/** A node of Tailwind's CSS AST, as far as this engine needs it. */
+interface AstNode {
+  kind: string;
+  selector?: string;
+  property?: string;
+  value?: string;
+  nodes?: AstNode[];
 }
 
 interface V4TailwindModule {
@@ -243,6 +256,68 @@ export class V4Engine implements TailwindEngine {
         return a.weight < b.weight ? -1 : 1;
       })
       .map((entry) => entry.candidate);
+  }
+
+  /**
+   * Report the CSS properties each candidate sets.
+   *
+   * The AST is used rather than the generated CSS, because the CSS wraps
+   * rules in at-rules and mixes in a Tailwind banner, which would make the
+   * properties hard to attribute to a candidate.
+   */
+  async describe(candidates: readonly string[]): Promise<readonly CandidateDescription[]> {
+    const designSystem = await this.designSystemFresh();
+    const list = [...candidates];
+    const asts = designSystem.candidatesToAst(list);
+    const order = new Map(designSystem.getClassOrder(list));
+
+    return list.map((candidate, index) => {
+      const properties: string[] = [];
+      const values: Record<string, string> = {};
+
+      for (const node of asts[index] ?? []) {
+        // Only style rules carry the utility's own declarations. The AST also
+        // contains `@property` rules that Tailwind emits for its custom
+        // properties; those are not part of the utility.
+        if (node.kind !== "rule") continue;
+        for (const declaration of node.nodes ?? []) {
+          if (declaration.kind !== "declaration") continue;
+          if (!declaration.property) continue;
+          properties.push(declaration.property);
+          values[declaration.property] = declaration.value ?? "";
+        }
+      }
+
+      const weight = order.get(candidate) ?? null;
+      return {
+        candidate,
+        properties,
+        values,
+        order: weight === null ? null : Number(weight),
+      };
+    });
+  }
+
+  /**
+   * Rewrite candidates into their canonical form.
+   *
+   * Tailwind's own canonicalizer is used, which knows both the theme of this
+   * project and the v3-to-v4 renames. The root font size is assumed to be
+   * 16px, matching the browser default and `prettier-plugin-tailwindcss`.
+   */
+  async canonicalize(candidates: readonly string[]): Promise<readonly CanonicalCandidate[]> {
+    const designSystem = await this.designSystemFresh();
+    const list = [...candidates];
+    const canonical = designSystem.canonicalizeCandidates(list, { rem: 16 });
+
+    return list.map((candidate, index) => {
+      const rewritten = canonical[index] ?? candidate;
+      return {
+        candidate,
+        canonical: rewritten,
+        changed: rewritten !== candidate,
+      };
+    });
   }
 }
 

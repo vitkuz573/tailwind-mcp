@@ -11,10 +11,15 @@ project's own `tailwindcss` package and asks the engine itself.
 
 | Tool                      | Answers                                               |
 | ------------------------- | ----------------------------------------------------- |
+| `tailwind_diagnose`       | What is wrong with this class list? Start here.       |
 | `tailwind_validate`       | Do these classes exist, and what CSS do they produce? |
 | `tailwind_search_classes` | What is the exact name of the utility I need?         |
 | `tailwind_theme`          | Which design tokens does this project define?         |
 | `tailwind_variants`       | Which variants does this project understand?          |
+| `tailwind_conflicts`      | Which of these two classes wins?                      |
+| `tailwind_canonicalize`   | How should this class list be written?                |
+| `tailwind_migrate`        | What does this v3 class become in v4?                 |
+| `tailwind_contrast`       | Is this text readable on that background?             |
 
 The answers come from the project's own installation, so they include:
 
@@ -22,6 +27,43 @@ The answers come from the project's own installation, so they include:
 - custom theme values from `@theme`, `theme.extend` or a config file,
 - classes contributed by plugins,
 - utilities that only exist in newer or older Tailwind releases.
+
+### `tailwind_diagnose`
+
+One call, every problem. This is the tool to use before writing markup.
+
+```json
+{ "candidates": ["p-4 flex bg-red-501 mt-[16px] p-2 p-4 shadow-sm"] }
+```
+
+reports four kinds of finding:
+
+- **unknown** — the class does not exist, with spelling suggestions,
+- **arbitrary** — the class uses an arbitrary value where a theme token would do,
+- **conflicting** — one class silently overrides another,
+- **migration** — a v3 class whose meaning changed in v4.
+
+Spelling suggestions come from the real class list, so `bg-red-501` is corrected
+to `bg-red-500`, and a missing shade is completed: `bg-brand` becomes
+`bg-brand-500` when the project defines that scale.
+
+Which class wins a conflict is not guessed. Tailwind decides the order of the
+generated stylesheet, and the server asks it: the class with the higher class
+order is the one emitted later, and later wins.
+
+`tailwind_canonicalize` additionally rewrites `mt-[16px]` into `mt-4` and
+`overflow-ellipsis` into `text-ellipsis`, and sorts the list the way
+`prettier-plugin-tailwindcss` would.
+
+### `tailwind_contrast`
+
+Computes the WCAG ratio between two colours and whether they pass AA or AAA.
+Colours may be theme tokens (`red-500`, `slate-900`), colour utility names
+(`text-white`, `bg-slate-900`) or literal CSS colours.
+
+Tailwind v4 stores colours as `oklch()`, which is converted to sRGB following
+CSS Color 4, including the chroma reduction needed for colours outside the
+sRGB gamut.
 
 ## Design principles
 
@@ -109,6 +151,16 @@ Logs are written to stderr as JSON lines. stdout carries the MCP protocol only.
 local files that feed the design system is computed by following `@import`, `@config`
 and `@plugin` directives, and a cheap size/mtime fingerprint of those files decides
 whether the engine has to be rebuilt.
+
+`src/core/fuzzy.ts` finds spelling suggestions with a bounded Levenshtein distance
+over the real class list, with a banded matrix so the cost stays proportional to the
+distance limit rather than to the length of the class list.
+
+`src/tailwind/conflicts.ts` decides which class wins by comparing Tailwind's own
+class order, expanding shorthands so that `p-4` and `pl-2` are seen to overlap.
+
+`src/core/color.ts` parses the colour formats Tailwind uses and converts `oklch()` to
+sRGB following CSS Color 4, reducing chroma for colours outside the sRGB gamut.
 
 ## Development
 

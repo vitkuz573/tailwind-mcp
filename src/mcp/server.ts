@@ -14,6 +14,13 @@ import { isTailwindMcpError, TailwindMcpError } from "../core/errors.js";
 import { createLogger, type Logger } from "../core/logger.js";
 import { ProjectRegistry } from "../tailwind/registry.js";
 import {
+  canonicalizeClasses,
+  checkContrast,
+  diagnose,
+  findConflicts,
+  migrateClasses,
+} from "./diagnostics.js";
+import {
   listVariants,
   readTheme,
   searchClasses,
@@ -28,15 +35,21 @@ const INSTRUCTIONS = `
 Ground truth about the Tailwind CSS project you are working in.
 
 How to work with this server:
-1. tailwind_validate — check candidate classes and get the CSS they generate. Use this BEFORE writing markup, so you never emit a class that does not exist in this project.
-2. tailwind_search_classes — find the real class names. Use this when you know the intent ("rounded corners", "shadow") but not the exact utility.
-3. tailwind_theme — read design tokens (colors, spacing, breakpoints). Use the project's own token names, never generic ones.
-4. tailwind_variants — list available variants such as hover:, md: or dark:.
+1. tailwind_diagnose — the main tool. Checks a class list for unknown classes, typos, arbitrary values that should be theme tokens, conflicting classes and v3 classes needing migration. Start here.
+2. tailwind_validate — check specific classes and get the CSS they generate.
+3. tailwind_search_classes — find the real class names when you know the intent but not the utility.
+4. tailwind_theme — read design tokens (colors, spacing, breakpoints).
+5. tailwind_variants — list available variants such as hover:, md: or dark:.
+6. tailwind_conflicts — report which class wins when several set the same property.
+7. tailwind_canonicalize — put a class list into Tailwind's canonical form and order.
+8. tailwind_migrate — map v3 classes to their v4 equivalents.
+9. tailwind_contrast — check WCAG contrast between two colours.
 
 Guarantees:
 - The class list and theme come from the project's own Tailwind installation, so custom theme values, plugins and the exact installed version are reflected.
 - Config edits are picked up automatically; you do not need to restart anything.
 - Invalid classes are reported as invalid, never silently accepted.
+- Which of two conflicting classes wins is determined by Tailwind's own class order, not guessed.
 
 Bounded by design: every result is paginated and capped.
 `.trim();
@@ -235,6 +248,139 @@ function registerTools(
           limit: Math.min(limit ?? config.maxResults, config.maxResults),
           offset: offset ?? 0,
         }),
+      );
+    },
+  );
+
+  server.registerTool(
+    "tailwind_diagnose",
+    {
+      title: "Diagnose a Tailwind class list",
+      description:
+        "Check a class list for every problem at once: classes that do not exist (with spelling " +
+        "suggestions), classes that use an arbitrary value where a theme token would do, classes that " +
+        "override each other, and v3 classes that need migrating to v4. " +
+        "This is the tool to call before writing or editing markup.",
+      inputSchema: z.object({
+        candidates: z
+          .array(z.string().min(1))
+          .min(1)
+          .describe(
+            "The class list to diagnose, e.g. ['p-4', 'bg-red-501', 'mt-[16px]', 'p-2 p-4']",
+          ),
+        project: projectArg,
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ candidates, project }) => {
+      const holder = await registry.get(resolveProjectRoot(config, project));
+      return guard(logger, "tailwind_diagnose", () =>
+        diagnose(holder.engine, { candidates: candidates.slice(0, config.maxCandidates) }),
+      );
+    },
+  );
+
+  server.registerTool(
+    "tailwind_conflicts",
+    {
+      title: "Find conflicting Tailwind classes",
+      description:
+        "Report which class wins when several set the same CSS property, and which ones are silently " +
+        "overridden. The winner follows Tailwind's own class order.",
+      inputSchema: z.object({
+        candidates: z
+          .array(z.string().min(1))
+          .min(1)
+          .describe("The class list to check, e.g. ['p-2', 'p-4', 'text-sm', 'text-lg']"),
+        project: projectArg,
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ candidates, project }) => {
+      const holder = await registry.get(resolveProjectRoot(config, project));
+      return guard(logger, "tailwind_conflicts", () =>
+        findConflicts(holder.engine, { candidates: candidates.slice(0, config.maxCandidates) }),
+      );
+    },
+  );
+
+  server.registerTool(
+    "tailwind_canonicalize",
+    {
+      title: "Canonicalise a Tailwind class list",
+      description:
+        "Rewrite a class list into Tailwind's canonical form and order: arbitrary values that match a " +
+        "theme token become that token, deprecated spellings are renamed, and the classes are sorted the " +
+        "way prettier-plugin-tailwindcss would sort them.",
+      inputSchema: z.object({
+        candidates: z
+          .array(z.string().min(1))
+          .min(1)
+          .describe("The class list to canonicalise, e.g. ['mt-[16px]', 'p-4', 'flex']"),
+        project: projectArg,
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ candidates, project }) => {
+      const holder = await registry.get(resolveProjectRoot(config, project));
+      return guard(logger, "tailwind_canonicalize", () =>
+        canonicalizeClasses(holder.engine, {
+          candidates: candidates.slice(0, config.maxCandidates),
+        }),
+      );
+    },
+  );
+
+  server.registerTool(
+    "tailwind_migrate",
+    {
+      title: "Migrate Tailwind v3 classes to v4",
+      description:
+        "Map v3 class names to their v4 equivalents, including the scale renames whose meaning changed " +
+        "silently (shadow-sm, rounded, blur and the rest). Use this when porting v3 code to v4.",
+      inputSchema: z.object({
+        candidates: z
+          .array(z.string().min(1))
+          .min(1)
+          .describe(
+            "The v3 class list to migrate, e.g. ['shadow-sm', 'bg-opacity-50', 'flex-shrink-0']",
+          ),
+        project: projectArg,
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ candidates, project }) => {
+      const holder = await registry.get(resolveProjectRoot(config, project));
+      return guard(logger, "tailwind_migrate", () =>
+        migrateClasses(holder.engine, { candidates: candidates.slice(0, config.maxCandidates) }),
+      );
+    },
+  );
+
+  server.registerTool(
+    "tailwind_contrast",
+    {
+      title: "Check Tailwind colour contrast",
+      description:
+        "Compute the WCAG contrast ratio of two colours and whether they pass AA or AAA. " +
+        "Colours may be theme tokens such as 'red-500' or 'white', or literal CSS colours.",
+      inputSchema: z.object({
+        foreground: z
+          .string()
+          .min(1)
+          .describe("The text colour, e.g. 'white' or 'red-500' or '#333'"),
+        background: z
+          .string()
+          .min(1)
+          .describe("The background colour, e.g. 'slate-900' or 'white' or '#fff'"),
+        project: projectArg,
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ foreground, background, project }) => {
+      const holder = await registry.get(resolveProjectRoot(config, project));
+      return guard(logger, "tailwind_contrast", () =>
+        checkContrast(holder.engine, { foreground, background }),
       );
     },
   );

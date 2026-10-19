@@ -10,6 +10,7 @@
  */
 
 import type { ClassEntry, TailwindEngine, ThemeToken, VariantEntry } from "../core/types.js";
+import { splitCandidates } from "./diagnostics.js";
 
 export interface ToolEnvelope<T> {
   readonly summary: string;
@@ -36,7 +37,8 @@ export async function validateCandidates(
   engine: TailwindEngine,
   input: ValidateInput,
 ): Promise<ToolEnvelope<ValidationData>> {
-  const results = await engine.compile(input.candidates);
+  const candidates = splitCandidates(input.candidates);
+  const results = await engine.compile(candidates);
   const valid: string[] = [];
   const invalid: { candidate: string; reason: string }[] = [];
   const compiled: { candidate: string; css: string }[] = [];

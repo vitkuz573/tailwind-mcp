@@ -94,4 +94,47 @@ export interface TailwindEngine {
    * that match what a human would write.
    */
   canonicalOrder(candidates: readonly string[]): Promise<readonly string[]>;
+  /**
+   * The CSS properties each candidate sets.
+   *
+   * This is what makes conflict detection possible: two classes that set the
+   * same property fight each other, and the one emitted later in the
+   * stylesheet wins.
+   */
+  describe(candidates: readonly string[]): Promise<readonly CandidateDescription[]>;
+  /**
+   * Rewrite candidates into Tailwind's canonical form.
+   *
+   * Arbitrary values that match a theme value are replaced with the utility
+   * that expresses them (`mt-[16px]` → `mt-4`), and deprecated v3 spellings
+   * are renamed (`overflow-ellipsis` → `text-ellipsis`).
+   */
+  canonicalize(candidates: readonly string[]): Promise<readonly CanonicalCandidate[]>;
+}
+
+/** What a single candidate sets in CSS. */
+export interface CandidateDescription {
+  /** The candidate as it was handed in. */
+  readonly candidate: string;
+  /** CSS properties the candidate sets, in order. */
+  readonly properties: readonly string[];
+  /** The declaration values, keyed by property. */
+  readonly values: Readonly<Record<string, string>>;
+  /**
+   * The candidate's position in Tailwind's class order.
+   *
+   * A higher number means the class is emitted later in the stylesheet and
+   * therefore wins against classes that set the same property.
+   */
+  readonly order: number | null;
+}
+
+/** A candidate in Tailwind's canonical form. */
+export interface CanonicalCandidate {
+  /** The candidate as it was handed in. */
+  readonly candidate: string;
+  /** The canonical spelling, which may differ from the input. */
+  readonly canonical: string;
+  /** True when the canonical form differs from the input. */
+  readonly changed: boolean;
 }

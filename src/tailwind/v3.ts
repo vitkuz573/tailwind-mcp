@@ -16,12 +16,15 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { loadFailed } from "../core/errors.js";
 import type {
+  CandidateDescription,
+  CanonicalCandidate,
   ClassEntry,
   CompiledClass,
   TailwindEngine,
   ThemeToken,
   VariantEntry,
 } from "../core/types.js";
+import { findMigration } from "./migration.js";
 import { fingerprint, fingerprintsEqual, type Fingerprint } from "./fingerprint.js";
 import { collectDependencies } from "./dependencies.js";
 import type { ResolvedProject, TailwindInstall } from "./project.js";
@@ -254,6 +257,102 @@ export class V3Engine implements TailwindEngine {
       })
       .map((entry) => entry.candidate);
   }
+
+  /**
+   * Report the CSS properties each candidate sets.
+   *
+   * v3 has no AST API, so the properties are read from the CSS the PostCSS
+   * pipeline produced for each candidate.
+   */
+  async describe(candidates: readonly string[]): Promise<readonly CandidateDescription[]> {
+    const context = await this.fresh();
+    const known = new Set(context.getClassList());
+    const list = [...candidates];
+
+    const plausible = list.filter((candidate) => {
+      const base = stripVariants(candidate);
+      return known.has(candidate) || known.has(base);
+    });
+    const rendered =
+      plausible.length > 0 ? await this.render(plausible) : new Map<string, string>();
+
+    const order = new Map(context.getClassOrder(list));
+
+    return list.map((candidate) => {
+      const properties: string[] = [];
+      const values: Record<string, string> = {};
+
+      for (const property of declarationsOf(rendered.get(candidate) ?? "")) {
+        properties.push(property.name);
+        values[property.name] = property.value;
+      }
+
+      const weight = order.get(candidate) ?? null;
+      return {
+        candidate,
+        properties,
+        values,
+        order: weight === null ? null : Number(weight),
+      };
+    });
+  }
+
+  /**
+   * Rewrite candidates into their canonical form.
+   *
+   * v3 has no canonicalizer of its own, so the v3-to-v4 renames from the
+   * official upgrade guide are applied here. Arbitrary values are left alone:
+   * in v3 they are already the canonical way to express a value.
+   */
+  async canonicalize(candidates: readonly string[]): Promise<readonly CanonicalCandidate[]> {
+    const context = await this.fresh();
+    const known = new Set(context.getClassList());
+
+    return candidates.map((candidate) => {
+      const separator = candidate.lastIndexOf(":");
+      const prefix = separator > 0 ? candidate.slice(0, separator + 1) : "";
+      const utility = separator > 0 ? candidate.slice(separator + 1) : candidate;
+
+      const finding = findMigration(candidate, known.has(utility));
+      if (!finding) return { candidate, canonical: candidate, changed: false };
+      return { candidate, canonical: finding.replacement, changed: true };
+    });
+  }
+}
+
+/** One CSS declaration read from a rendered rule. */
+interface Declaration {
+  readonly name: string;
+  readonly value: string;
+}
+
+/**
+ * Read the declarations out of a rendered CSS rule.
+ *
+ * The rule looks like `.p-4 {\n  padding: 1rem\n}`. The last declaration has
+ * no trailing semicolon, so a declaration is recognised by the presence of a
+ * colon rather than by its terminator.
+ */
+function declarationsOf(css: string): Declaration[] {
+  const open = css.indexOf("{");
+  const close = css.lastIndexOf("}");
+  if (open === -1 || close === -1 || close < open) return [];
+
+  const body = css.slice(open + 1, close);
+  const declarations: Declaration[] = [];
+
+  for (const line of body.split("\n")) {
+    const trimmed = line.trim().replace(/;$/, "");
+    if (trimmed === "") continue;
+    const colon = trimmed.indexOf(":");
+    if (colon === -1) continue;
+    declarations.push({
+      name: trimmed.slice(0, colon).trim(),
+      value: trimmed.slice(colon + 1).trim(),
+    });
+  }
+
+  return declarations;
 }
 
 /** Minimal PostCSS surface used by this engine. */

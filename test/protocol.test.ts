@@ -138,6 +138,11 @@ describe("MCP protocol", () => {
     const list = responses.find((r) => r.id === 2);
     const tools = (list?.result?.tools ?? []) as { name: string }[];
     expect(tools.map((tool) => tool.name).sort()).toEqual([
+      "tailwind_canonicalize",
+      "tailwind_conflicts",
+      "tailwind_contrast",
+      "tailwind_diagnose",
+      "tailwind_migrate",
       "tailwind_search_classes",
       "tailwind_theme",
       "tailwind_validate",
