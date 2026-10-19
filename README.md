@@ -159,8 +159,33 @@ distance limit rather than to the length of the class list.
 `src/tailwind/conflicts.ts` decides which class wins by comparing Tailwind's own
 class order, expanding shorthands so that `p-4` and `pl-2` are seen to overlap.
 
+`src/tailwind/canonicalize.ts` rewrites an arbitrary value into the theme token
+that expresses it, and applies the v3-to-v4 renames. This is implemented here
+rather than through Tailwind's own `canonicalizeCandidates`, which builds an index
+of every class on first use — it takes seconds and blocks the event loop, so the
+first request in a session stalled the whole server. The local implementation
+answers in milliseconds.
+
 `src/core/color.ts` parses the colour formats Tailwind uses and converts `oklch()` to
 sRGB following CSS Color 4, reducing chroma for colours outside the sRGB gamut.
+
+## Performance
+
+Measured against a real project with a custom theme, on the first call after a
+server start:
+
+| Operation                 | Latency |
+| ------------------------- | ------- |
+| `tailwind_validate`       | ~130 ms |
+| `tailwind_diagnose`       | ~300 ms |
+| `tailwind_conflicts`      | ~15 ms  |
+| `tailwind_canonicalize`   | ~15 ms  |
+| `tailwind_contrast`       | ~20 ms  |
+| `tailwind_theme`          | ~20 ms  |
+| `tailwind_search_classes` | ~340 ms |
+
+The engine is rebuilt when the project's configuration changes, so the first call
+after an edit pays the reload cost once.
 
 ## Development
 
