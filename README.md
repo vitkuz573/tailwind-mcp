@@ -1,17 +1,136 @@
 # tailwind-mcp
 
-Model Context Protocol server that exposes the **real** Tailwind CSS engine of your project.
+<!-- prettier-ignore -->
+> **A Model Context Protocol server that asks Tailwind itself.**
+> No hand-written class lists, no stale snapshots — the server loads your project's own
+> `tailwindcss` and queries the real engine, so every answer matches the code you actually build.
 
-Most "Tailwind MCP" servers ship a hand-written list of class names copied from some
-documentation snapshot. That list is wrong the moment you use a custom theme, a plugin,
-or a version newer than the copy. This server does not keep a list: it loads the
-project's own `tailwindcss` package and asks the engine itself.
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![node](https://img.shields.io/badge/node-%3E%3D20-5FA04E.svg)](https://nodejs.org)
+[![protocol](https://img.shields.io/badge/MCP-2026--07--28%20%2B%20legacy-8A2BE2.svg)](https://modelcontextprotocol.io)
+[![types](https://img.shields.io/badge/types-strict-informational.svg)](src)
+[![tests](https://img.shields.io/badge/tests-101%20passing-success.svg)](test)
 
-## What it gives you
+|                  |                                                                                               |
+| ---------------- | --------------------------------------------------------------------------------------------- |
+| **Tools**        | 9 read-only tools (`tailwind_diagnose`, `tailwind_validate`, `tailwind_conflicts`, …)         |
+| **Engine**       | your project's own `tailwindcss` — v3 **and** v4, with your theme, your plugins, your version |
+| **Class list**   | 23 000+ real utilities, straight from the engine that generates them                          |
+| **Latency**      | 13–340 ms per call, no network, no database                                                   |
+| **Dependencies** | one runtime dependency tree from the official SDK                                             |
+| **Reload**       | config edits are picked up automatically — no restart, ever                                   |
+
+---
+
+## Why this exists
+
+An LLM writing Tailwind makes three mistakes, all of them the same mistake: **it invents classes
+that do not exist.**
+
+```html
+<div class="bg-gray-600 p-4 shadow-lg">
+  <!-- does this class exist in THIS project? -->
+  <div class="bg-red-550 mt-[16px]">
+    <!-- typo, and a magic number instead of a token -->
+    <div class="p-2 p-4 text-sm text-lg"><!-- which of these two actually wins? --></div>
+  </div>
+</div>
+```
+
+Every existing "Tailwind MCP" answers this by shipping a class list copied from a documentation
+snapshot. That list is wrong the moment you use a custom theme, a plugin, or a version newer than
+the copy — and it cannot tell you which of two conflicting classes wins, because that depends on
+your project's own configuration.
+
+This server has no list. It loads the `tailwindcss` package **from your `node_modules`** and asks
+the engine:
+
+```
+your project → your tailwindcss → the real engine → the real answer
+```
+
+- the class list contains exactly the utilities **your** project can build, including custom theme
+  values, `@utility` blocks and plugin classes;
+- the version is **yours**, so v3 and v4 projects each get the truth for their own generation;
+- which class wins a conflict is decided by Tailwind's own class order, not by a guess;
+- when you edit your config, the server notices and rebuilds itself — no restart.
+
+## Install
+
+Requires **Node.js ≥ 20**.
+
+```sh
+git clone https://github.com/vitkuz573/tailwind-mcp.git
+cd tailwind-mcp
+npm ci
+npm run build
+```
+
+## Connect a host
+
+### OpenCode
+
+```sh
+opencode mcp add tailwind -- node /absolute/path/to/tailwind-mcp/dist/index.js
+```
+
+Or by hand:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "tailwind": {
+        "type": "local",
+        "command": ["node", "/absolute/path/to/tailwind-mcp/dist/index.js"],
+        "timeout": { "startup": 60000, "execution": 120000 },
+      },
+    },
+  },
+}
+```
+
+The server finds the project by walking up from its working directory until it finds a
+`node_modules/tailwindcss`. Every tool also takes an optional `project` argument with an absolute
+path, for when the Tailwind project is not the current directory.
+
+### Claude Code
+
+```sh
+claude mcp add tailwind -- node /absolute/path/to/tailwind-mcp/dist/index.js
+```
+
+### Any other MCP client
+
+```sh
+node dist/index.js                 # stdio transport
+```
+
+## The tool surface
+
+### `tailwind_diagnose` — start here
+
+One call, every problem with a class list.
+
+```json
+{ "candidates": ["p-4 flex bg-red-501 mt-[16px] p-2 p-4 shadow-sm"] }
+```
+
+| Finding         | Meaning                                             | Example                                         |
+| --------------- | --------------------------------------------------- | ----------------------------------------------- |
+| **unknown**     | the class does not exist, with spelling suggestions | `bg-red-501` → `bg-red-500`, `bg-red-50`        |
+| **arbitrary**   | an arbitrary value where a theme token would do     | `mt-[16px]` → `mt-4`, `text-[14px]` → `text-sm` |
+| **conflicting** | one class silently overrides another                | `p-4` beats `p-2`                               |
+| **migration**   | a v3 class whose meaning changed in v4              | `shadow-sm` → `shadow-xs`                       |
+
+Suggestions come from the real class list, so a missing shade is completed too: `bg-brand` becomes
+`bg-brand-500` when your project defines that scale.
+
+### The rest
 
 | Tool                      | Answers                                               |
 | ------------------------- | ----------------------------------------------------- |
-| `tailwind_diagnose`       | What is wrong with this class list? Start here.       |
 | `tailwind_validate`       | Do these classes exist, and what CSS do they produce? |
 | `tailwind_search_classes` | What is the exact name of the utility I need?         |
 | `tailwind_theme`          | Which design tokens does this project define?         |
@@ -21,171 +140,45 @@ project's own `tailwindcss` package and asks the engine itself.
 | `tailwind_migrate`        | What does this v3 class become in v4?                 |
 | `tailwind_contrast`       | Is this text readable on that background?             |
 
-The answers come from the project's own installation, so they include:
+## Details worth knowing
 
-- the exact installed Tailwind version (v3 and v4 are both supported),
-- custom theme values from `@theme`, `theme.extend` or a config file,
-- classes contributed by plugins,
-- utilities that only exist in newer or older Tailwind releases.
+**Which class wins.** Tailwind sorts the utilities it generates, and at equal specificity the later
+rule wins. The server asks the engine for that order rather than guessing, so `p-4` beating `p-2`
+is a fact, not a heuristic. Shorthands are expanded, so `p-4` and `pl-2` are correctly seen to
+fight over the left padding.
 
-### `tailwind_diagnose`
+**The v3 trap.** In v4 the whole shadow, radius and blur scale shifted. `shadow-sm` still exists —
+and now means what `shadow-xs` used to mean. The server flags that as `meaning-changed`, because the
+class compiles and the bug is silent.
 
-One call, every problem. This is the tool to use before writing markup.
+**Contrast.** Tailwind v4 stores colours as `oklch()`. The server converts to sRGB following
+CSS Color 4, including the chroma reduction needed for colours outside the sRGB gamut, and reports
+the WCAG AA and AAA verdicts.
 
-```json
-{ "candidates": ["p-4 flex bg-red-501 mt-[16px] p-2 p-4 shadow-sm"] }
-```
-
-reports four kinds of finding:
-
-- **unknown** — the class does not exist, with spelling suggestions,
-- **arbitrary** — the class uses an arbitrary value where a theme token would do,
-- **conflicting** — one class silently overrides another,
-- **migration** — a v3 class whose meaning changed in v4.
-
-Spelling suggestions come from the real class list, so `bg-red-501` is corrected
-to `bg-red-500`, and a missing shade is completed: `bg-brand` becomes
-`bg-brand-500` when the project defines that scale.
-
-Which class wins a conflict is not guessed. Tailwind decides the order of the
-generated stylesheet, and the server asks it: the class with the higher class
-order is the one emitted later, and later wins.
-
-`tailwind_canonicalize` additionally rewrites `mt-[16px]` into `mt-4` and
-`overflow-ellipsis` into `text-ellipsis`, and sorts the list the way
-`prettier-plugin-tailwindcss` would.
-
-### `tailwind_contrast`
-
-Computes the WCAG ratio between two colours and whether they pass AA or AAA.
-Colours may be theme tokens (`red-500`, `slate-900`), colour utility names
-(`text-white`, `bg-slate-900`) or literal CSS colours.
-
-Tailwind v4 stores colours as `oklch()`, which is converted to sRGB following
-CSS Color 4, including the chroma reduction needed for colours outside the
-sRGB gamut.
-
-## Design principles
-
-- **No hand-written class list.** The class list, the theme and the generated CSS are
-  produced by Tailwind itself.
-- **Never silently accept a bad class.** An unknown utility is reported as invalid
-  with a reason.
-- **No restart after a config edit.** The engine watches every file that feeds it —
-  the CSS entry point, imported partials, the config file and its imports — and
-  rebuilds itself when they change.
-- **Bounded output.** Every result is paginated and capped.
-
-## Install
-
-```sh
-npm install
-npm run build
-```
-
-The server needs no configuration. It resolves the project from the working directory,
-walking upwards until it finds a `node_modules/tailwindcss`.
-
-### OpenCode
-
-```sh
-opencode mcp add tailwind -- node /path/to/tailwind-mcp/dist/index.js
-```
-
-Or by hand:
-
-```jsonc
-{
-  "mcp": {
-    "servers": {
-      "tailwind": {
-        "type": "local",
-        "command": ["node", "/path/to/tailwind-mcp/dist/index.js"],
-      },
-    },
-  },
-}
-```
-
-### Claude Code
-
-```sh
-claude mcp add tailwind -- node /path/to/tailwind-mcp/dist/index.js
-```
-
-## Usage
-
-Every tool takes an optional `project` argument with an absolute path. It is only
-needed when the Tailwind project is not the current working directory:
-
-```jsonc
-{
-  "candidates": ["p-4", "bg-brand-500", "text-nope"],
-  "project": "/home/user/my-app",
-}
-```
-
-## Environment
-
-| Variable                      | Default           | Meaning                                    |
-| ----------------------------- | ----------------- | ------------------------------------------ |
-| `TAILWIND_MCP_PROJECT`        | working directory | Project root to resolve from               |
-| `TAILWIND_MCP_CSS_FILE`       | auto-detected     | Explicit CSS entry point                   |
-| `TAILWIND_MCP_LOG_LEVEL`      | `info`            | `debug`, `info`, `warn`, `error`, `silent` |
-| `TAILWIND_MCP_MAX_RESULTS`    | `200`             | Maximum rows per result                    |
-| `TAILWIND_MCP_MAX_CANDIDATES` | `100`             | Maximum candidates per validation          |
-
-Logs are written to stderr as JSON lines. stdout carries the MCP protocol only.
-
-## How it works
-
-`src/tailwind/` holds one adapter per Tailwind generation:
-
-- `v4.ts` uses `__unstable__loadDesignSystem`, the same entry point Tailwind's own
-  language server uses. Stylesheet and module resolution is done locally, so the
-  project's dependencies are used.
-- `v3.ts` resolves the project config with `resolveConfig` and renders CSS through
-  the real PostCSS pipeline with the project's own theme.
-
-`src/tailwind/fingerprint.ts` and `dependencies.ts` implement the reload: the set of
-local files that feed the design system is computed by following `@import`, `@config`
-and `@plugin` directives, and a cheap size/mtime fingerprint of those files decides
-whether the engine has to be rebuilt.
-
-`src/core/fuzzy.ts` finds spelling suggestions with a bounded Levenshtein distance
-over the real class list, with a banded matrix so the cost stays proportional to the
-distance limit rather than to the length of the class list.
-
-`src/tailwind/conflicts.ts` decides which class wins by comparing Tailwind's own
-class order, expanding shorthands so that `p-4` and `pl-2` are seen to overlap.
-
-`src/tailwind/canonicalize.ts` rewrites an arbitrary value into the theme token
-that expresses it, and applies the v3-to-v4 renames. This is implemented here
-rather than through Tailwind's own `canonicalizeCandidates`, which builds an index
-of every class on first use — it takes seconds and blocks the event loop, so the
-first request in a session stalled the whole server. The local implementation
-answers in milliseconds.
-
-`src/core/color.ts` parses the colour formats Tailwind uses and converts `oklch()` to
-sRGB following CSS Color 4, reducing chroma for colours outside the sRGB gamut.
+**Reloading.** The set of files that feed the design system is discovered by following `@import`,
+`@config` and `@plugin`, and a size/mtime fingerprint of those files decides whether the engine
+has to be rebuilt. Edit any of them and the next call sees the change.
 
 ## Performance
 
-Measured against a real project with a custom theme, on the first call after a
-server start:
+Measured against a real project with a custom theme, on the first call after a server start:
 
-| Operation                 | Latency |
+| Tool                      | Latency |
 | ------------------------- | ------- |
-| `tailwind_validate`       | ~130 ms |
-| `tailwind_diagnose`       | ~300 ms |
-| `tailwind_conflicts`      | ~15 ms  |
-| `tailwind_canonicalize`   | ~15 ms  |
-| `tailwind_contrast`       | ~20 ms  |
-| `tailwind_theme`          | ~20 ms  |
-| `tailwind_search_classes` | ~340 ms |
+| `tailwind_conflicts`      | 13 ms   |
+| `tailwind_canonicalize`   | 16 ms   |
+| `tailwind_contrast`       | 17 ms   |
+| `tailwind_theme`          | 21 ms   |
+| `tailwind_validate`       | 126 ms  |
+| `tailwind_diagnose`       | 305 ms  |
+| `tailwind_search_classes` | 344 ms  |
 
-The engine is rebuilt when the project's configuration changes, so the first call
-after an edit pays the reload cost once.
+There is no network call, no database and no cache to go stale. The engine is rebuilt when your
+configuration changes, so the first call after an edit pays the reload cost once.
+
+> Tailwind's own `canonicalizeCandidates` is deliberately **not** used: it builds an index of every
+> class on first use, which takes seconds and blocks the event loop. The same two rules are applied
+> locally against your theme instead, which answers in milliseconds.
 
 ## Development
 
@@ -195,8 +188,13 @@ npm test         # vitest
 npm run inspect  # MCP inspector
 ```
 
-The tests run against real Tailwind installations in temporary project fixtures —
-nothing is mocked.
+The tests run against **real Tailwind installations** in temporary project fixtures — v3 and v4, with
+custom themes, TypeScript configs and plugins. Nothing is mocked.
+
+## Status
+
+Tailwind Labs does not ship an official Tailwind MCP server. This is an independent implementation
+built on the official MCP SDK and Tailwind's own public engine API.
 
 ## License
 

@@ -1,0 +1,78 @@
+name: Bug report
+
+description: Something in the server behaves incorrectly
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. The most useful reports
+        include the class list you used and what the server said versus what
+        you expected.
+
+  - type: input
+    id: tailwind-version
+    attributes:
+      label: Tailwind version
+      description: The version installed in your project (`npm ls tailwindcss`)
+      placeholder: "4.3.3"
+    validations:
+      required: true
+
+  - type: input
+    id: node-version
+    attributes:
+      label: Node version
+      placeholder: "20.11.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: tool
+    attributes:
+      label: Which tool
+      options:
+        - tailwind_diagnose
+        - tailwind_validate
+        - tailwind_search_classes
+        - tailwind_theme
+        - tailwind_variants
+        - tailwind_conflicts
+        - tailwind_canonicalize
+        - tailwind_migrate
+        - tailwind_contrast
+        - Other / not a tool bug
+    validations:
+      required: true
+
+  - type: textarea
+    id: candidates
+    attributes:
+      label: Class list
+      description: The class list you passed to the tool
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What the correct answer should be, and why
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What you got
+      description: The server's actual answer
+      render: text
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config
+      description: The Tailwind config or CSS entry point, if it is short
+      render: text
