@@ -24,6 +24,7 @@ import type {
 } from "../core/types.js";
 import { fingerprint, fingerprintsEqual, type Fingerprint } from "./fingerprint.js";
 import { collectDependencies } from "./dependencies.js";
+import { buildScales, canonicalizeCandidate } from "./canonicalize.js";
 import type { ResolvedProject } from "./project.js";
 
 /** The subset of Tailwind v4's design system that this engine uses. */
@@ -132,6 +133,7 @@ export class V4Engine implements TailwindEngine {
       });
       this.designSystem = designSystem;
       this.fingerprint = await fingerprint(await this.watchedFiles());
+
       return designSystem;
     } catch (cause) {
       throw loadFailed(
@@ -304,18 +306,27 @@ export class V4Engine implements TailwindEngine {
    * Tailwind's own canonicalizer is used, which knows both the theme of this
    * project and the v3-to-v4 renames. The root font size is assumed to be
    * 16px, matching the browser default and `prettier-plugin-tailwindcss`.
+   *
+   * The canonicalizer builds an internal cache on first use, which takes
+   * several seconds. The cache is keyed by the options, so the same options
+   * object is always reused and the cost is paid once per design system.
    */
   async canonicalize(candidates: readonly string[]): Promise<readonly CanonicalCandidate[]> {
     const designSystem = await this.designSystemFresh();
     const list = [...candidates];
-    const canonical = designSystem.canonicalizeCandidates(list, { rem: 16 });
 
-    return list.map((candidate, index) => {
-      const rewritten = canonical[index] ?? candidate;
+    // Tailwind's own canonicalizer builds an index of every class the first
+    // time it runs, which takes seconds and blocks the event loop. The rules
+    // are simple enough to apply here, against the project's own theme.
+    const theme = await this.listTheme();
+    const scales = buildScales(theme);
+
+    return list.map((candidate) => {
+      const canonical = canonicalizeCandidate(candidate, theme, scales);
       return {
         candidate,
-        canonical: rewritten,
-        changed: rewritten !== candidate,
+        canonical,
+        changed: canonical !== candidate,
       };
     });
   }
